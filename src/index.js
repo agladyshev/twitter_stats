@@ -3,6 +3,7 @@ const bodyParser = require('body-parser');
 const { MongoClient } = require('mongodb');
 const assert = require('assert');
 const Twitter = require('twitter');
+const moment = require('moment');
 require('dotenv').config();
 
 const client = new Twitter({
@@ -26,7 +27,8 @@ const getTwitterAccounts = async () => {
     const col = db.collection('influencers');
 
     col.find({twitter_name: {$gt: ''}}).project({twitter_name:1, twitter_id:1}).toArray(function(err, accounts) {
-      getTwitterStats(accounts);
+      // getTwitterProfile(accounts);
+      getTweetInfo(accounts);
     });
     client.close();
   } catch (e) {
@@ -34,14 +36,14 @@ const getTwitterAccounts = async () => {
   }
 };
 
-const getTwitterStats = async (accounts) => {
+const getTwitterProfile = async (accounts) => {
   // Call twitter for updated profile information
   accounts.forEach((account) => {
     try {
       const uri = account.twitter_id ? 
-      `https://api.twitter.com/1.1/users/show.json?screen_name=${account.twitter_id}` :
+      `https://api.twitter.com/1.1/users/show.json?user_id=${account.twitter_id}` :
       `https://api.twitter.com/1.1/users/show.json?screen_name=${account.twitter_name}`;
-      client.get(`https://api.twitter.com/1.1/users/show.json?screen_name=${account.twitter_name}`, function (error, body, response) {
+      client.get(uri, function (error, body, response) {
         const {
           id_str: twitter_id,
           screen_name: twitter_name,
@@ -57,7 +59,7 @@ const getTwitterStats = async (accounts) => {
           account = Object.assign(account, {
             twitter_id, twitter_name, twitter_followers, tweets, twitter_pic, twitter_status});
         }
-        updateTwitterStats(account);
+        updateProfile(account);
       });
     } catch (e) {
       console.error(e);
@@ -65,7 +67,7 @@ const getTwitterStats = async (accounts) => {
   });
 };
 
-const updateTwitterStats = async (account) => {
+const updateProfile = async (account) => {
   // Update twitter stats in database
   try {
     const client = await MongoClient.connect(uri, { useNewUrlParser: true });
@@ -93,6 +95,50 @@ const updateTwitterStats = async (account) => {
   }
 };
 
+const getTweetInfo = async (accounts) => {
+  // Call twitter for updated profile information
+  // accounts.forEach((account) => {
+    try {
+      client.get(
+        `https://api.twitter.com/1.1/statuses/user_timeline.json?user_id=${accounts[0].twitter_id}&trim_user=true&exclude_replies=true&include_rts=false`,
+        function (error, tweets, response) {
+
+        const twitter_stats = tweets.reduce(function(accumulator, tweet, index) {
+          // Filter tweets with a selected period of time
+          if (moment(tweet.created_at, 'dd MMM DD HH:mm:ss ZZ YYYY', 'en')
+            .isAfter(moment().subtract(process.env.STATS_SINCE_DAYS, 'days'))) {
+            accumulator.retweets_recent = accumulator.retweets_recent + tweet.retweet_count;
+            accumulator.favorites_recent = accumulator.favorites_recent + tweet.favorite_count;
+            accumulator.tweets_recent += 1;
+          }
+          return accumulator;
+        }, {retweets_recent: 0, favorites_recent: 0, tweets_recent: 0});
+
+        console.log(twitter_stats);
+
+        // const {
+        //   id_str: twitter_id,
+        //   screen_name: twitter_name,
+        //   followers_count: twitter_followers,
+        //   statuses_count: tweets,
+        //   profile_image_url: twitter_pic,
+        // } = body;
+        // if (error) {
+        //   const twitter_status = error[0].message;
+        //   account = Object.assign(account, {twitter_status});
+        // } else {
+        //   const twitter_status = 'OK';
+        //   account = Object.assign(account, {
+        //     twitter_id, twitter_name, twitter_followers, tweets, twitter_pic, twitter_status});
+        // }
+        // updateProfile(account);
+      });
+    } catch (e) {
+      console.error(e);
+    }
+  // });
+};
+
 const app = express();
 app.use(bodyParser.json());
 app.use((req, res, next) => {
@@ -103,4 +149,5 @@ app.use((req, res, next) => {
 });
 
 app.get('/', (req, res) => getTwitterAccounts());
+app.get('/tweets', (req, res) => getTwitterAccounts());
 app.listen(3000, () => console.log('Example app listening on port 3000!'));
