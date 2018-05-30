@@ -20,24 +20,22 @@ const getTwitterAccounts = async () => {
   try {
     const client = await MongoClient.connect(uri, { useNewUrlParser: true });
 
-    console.log('Connected successfully to server');
-
     const db = client.db(process.env.DB_NAME);
 
     const col = db.collection('influencers');
 
-    col.find({twitter_name: {$gt: ''}}).project({twitter_name:1, twitter_id:1}).toArray(function(err, accounts) {
-      // getTwitterProfile(accounts);
-      getTweetInfo(accounts);
-    });
+    accounts = col.find({twitter_name: {$gt: ''}}).project({twitter_name:1, twitter_id:1}).toArray();
+
     client.close();
   } catch (e) {
     console.error(e);
   }
+  return accounts;
 };
 
-const getTwitterProfile = async (accounts) => {
+const getTwitterProfile = async () => {
   // Call twitter for updated profile information
+  const accounts = await getTwitterAccounts();
   accounts.forEach((account) => {
     try {
       const uri = account.twitter_id ? 
@@ -95,12 +93,13 @@ const updateProfile = async (account) => {
   }
 };
 
-const getTweetInfo = async (accounts) => {
-  // Call twitter for updated profile information
-  // accounts.forEach((account) => {
+const getTweetStats = async () => {
+  // Call twitter for user tweets
+  const accounts = await getTwitterAccounts();
+  accounts.forEach((account) => {
     try {
       client.get(
-        `https://api.twitter.com/1.1/statuses/user_timeline.json?user_id=${accounts[0].twitter_id}&trim_user=true&exclude_replies=true&include_rts=false`,
+        `https://api.twitter.com/1.1/statuses/user_timeline.json?user_id=${account.twitter_id}&trim_user=true&exclude_replies=true&include_rts=false`,
         function (error, tweets, response) {
 
         const twitter_stats = tweets.reduce(function(accumulator, tweet, index) {
@@ -113,30 +112,46 @@ const getTweetInfo = async (accounts) => {
           }
           return accumulator;
         }, {retweets_recent: 0, favorites_recent: 0, tweets_recent: 0});
-
-        console.log(twitter_stats);
-
-        // const {
-        //   id_str: twitter_id,
-        //   screen_name: twitter_name,
-        //   followers_count: twitter_followers,
-        //   statuses_count: tweets,
-        //   profile_image_url: twitter_pic,
-        // } = body;
-        // if (error) {
-        //   const twitter_status = error[0].message;
-        //   account = Object.assign(account, {twitter_status});
-        // } else {
-        //   const twitter_status = 'OK';
-        //   account = Object.assign(account, {
-        //     twitter_id, twitter_name, twitter_followers, tweets, twitter_pic, twitter_status});
-        // }
-        // updateProfile(account);
+        if (error) {
+          const twitter_status = error[0].message;
+          account = Object.assign(account, {twitter_status});
+        } else {
+          const twitter_status = 'OK';
+          account = Object.assign(account, twitter_stats, {twitter_cycle: process.env.STATS_SINCE_DAYS});
+        }
+        updateTweetStats(account);
       });
     } catch (e) {
       console.error(e);
     }
-  // });
+  });
+};
+
+const updateTweetStats = async (account) => {
+  // Update tweets stats in the database
+  try {
+    const client = await MongoClient.connect(uri, { useNewUrlParser: true });
+    const db = client.db(process.env.DB_NAME);
+    const col = db.collection('influencers');
+    col.updateOne(
+      { _id: account._id }
+      , {
+        $set: {
+          twitter_retweets_recent: account.retweets_recent,
+          twitter_favorites_recent: account.favorites_recent,
+          tweets_recent: account.tweets_recent,
+          twitter_cycle: account.twitter_cycle,
+          twitter_status: account.twitter_status,
+          tweets_updated: Date.now(),
+        }
+      }, function(err, result) {
+        assert.equal(err, null);
+        assert.equal(1, result.result.n);
+    });
+    client.close();
+  } catch (e) {
+    console.error(e);
+  }
 };
 
 const app = express();
@@ -148,6 +163,12 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/', (req, res) => getTwitterAccounts());
-app.get('/tweets', (req, res) => getTwitterAccounts());
+app.get('/', (req, res) => {
+  getTwitterProfile();
+  getTweetStats();
+});
+
+app.get('/tweets', (req, res) => getTweetStats());
+app.get('/profiles', (req, res) => getTwitterProfile());
+
 app.listen(3000, () => console.log('Example app listening on port 3000!'));
