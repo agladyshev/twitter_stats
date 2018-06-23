@@ -1,3 +1,5 @@
+'use strict' 
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const { MongoClient } = require('mongodb');
@@ -5,6 +7,8 @@ const assert = require('assert');
 const Twitter = require('twitter');
 const moment = require('moment');
 require('dotenv').config();
+
+const port = process.env.PORT || 3000;
 
 const client = new Twitter({
   consumer_key: process.env.TWITTER_CONSUMER_KEY,
@@ -15,57 +19,80 @@ const client = new Twitter({
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}${process.env.DB_HOST}/test?retryWrites=true`;
 
-const getTwitterAccounts = async () => {
+// Twitter API calls
+
+const fetchTwitterProfile = async (account) => {
+  const uri = account.twitter_id ?
+  `https://api.twitter.com/1.1/users/show.json?user_id=${account.twitter_id}` :
+  `https://api.twitter.com/1.1/users/show.json?screen_name=${account.twitter_name}`;
+  await client.get(uri, {})
+  .then(function (body) {
+    const {
+      id_str: twitter_id,
+      screen_name: twitter_name,
+      followers_count: twitter_followers,
+      statuses_count: tweets,
+      profile_image_url: twitter_pic,
+    } = body;
+    const twitter_status = 'OK';
+    account = Object.assign(account, {
+      twitter_id, twitter_name, twitter_followers, tweets, twitter_pic, twitter_status});
+    })
+    .catch(function (error) {
+      const twitter_status = error[0].message;
+      account = Object.assign(account, {twitter_status});
+    })
+    return await account;
+};
+
+const fetchProfileStats = async (account) => {
+  const uri = `https://api.twitter.com/1.1/statuses/user_timeline.json?user_id=${account.twitter_id}&trim_user=true&exclude_replies=true&include_rts=false`;
+  await client.get(uri, {})
+  .then(function (tweets) {
+    const twitter_stats = tweets.reduce(function(accumulator, tweet, index) {
+      // Filter tweets with a selected period of time
+      if (moment(tweet.created_at, 'dd MMM DD HH:mm:ss ZZ YYYY', 'en')
+        .isAfter(moment().subtract(process.env.STATS_SINCE_DAYS, 'days'))) {
+        accumulator.retweets_recent = accumulator.retweets_recent + tweet.retweet_count;
+        accumulator.favorites_recent = accumulator.favorites_recent + tweet.favorite_count;
+        accumulator.tweets_recent += 1;
+      }
+      return accumulator;
+    }, {retweets_recent: 0, favorites_recent: 0, tweets_recent: 0});
+    const twitter_status = 'OK';
+    account = Object.assign(account, twitter_stats, {twitter_cycle: process.env.STATS_SINCE_DAYS});
+  })
+  .catch(function (error) {
+    const twitter_status = error[0].message;
+    account = Object.assign(account, {twitter_status});
+  })
+  return await account;
+}
+
+const getTwitterAccounts = async (req, res, next) => {
   // Collect a list of influencers with twitter accounts
+  let accounts;
   try {
     const client = await MongoClient.connect(uri, { useNewUrlParser: true });
-
+    
     const db = client.db(process.env.DB_NAME);
-
+    
     const col = db.collection('influencers');
-
-    accounts = col.find({twitter_name: {$gt: ''}}).project({twitter_name:1, twitter_id:1}).toArray();
-
+    
+    accounts = await col.find({twitter_name: {$gt: ''}}).project({twitter_name:1, twitter_id:1}).toArray();
+    
     client.close();
   } catch (e) {
     console.error(e);
   }
-  return accounts;
+  res.body = accounts;
+  next();
+  // return accounts;
 };
 
-const getTwitterProfile = async () => {
-  // Call twitter for updated profile information
-  const accounts = await getTwitterAccounts();
-  accounts.forEach((account) => {
-    try {
-      const uri = account.twitter_id ? 
-      `https://api.twitter.com/1.1/users/show.json?user_id=${account.twitter_id}` :
-      `https://api.twitter.com/1.1/users/show.json?screen_name=${account.twitter_name}`;
-      client.get(uri, function (error, body, response) {
-        const {
-          id_str: twitter_id,
-          screen_name: twitter_name,
-          followers_count: twitter_followers,
-          statuses_count: tweets,
-          profile_image_url: twitter_pic,
-        } = body;
-        if (error) {
-          const twitter_status = error[0].message;
-          account = Object.assign(account, {twitter_status});
-        } else {
-          const twitter_status = 'OK';
-          account = Object.assign(account, {
-            twitter_id, twitter_name, twitter_followers, tweets, twitter_pic, twitter_status});
-        }
-        updateProfile(account);
-      });
-    } catch (e) {
-      console.error(e);
-    }
-  });
-};
+// MongoDB API calls
 
-const updateProfile = async (account) => {
+const updateMongoProfile = async (account) => {
   // Update twitter stats in database
   try {
     const client = await MongoClient.connect(uri, { useNewUrlParser: true });
@@ -93,41 +120,7 @@ const updateProfile = async (account) => {
   }
 };
 
-const getTweetStats = async () => {
-  // Call twitter for user tweets
-  const accounts = await getTwitterAccounts();
-  accounts.forEach((account) => {
-    try {
-      client.get(
-        `https://api.twitter.com/1.1/statuses/user_timeline.json?user_id=${account.twitter_id}&trim_user=true&exclude_replies=true&include_rts=false`,
-        function (error, tweets, response) {
-
-        const twitter_stats = tweets.reduce(function(accumulator, tweet, index) {
-          // Filter tweets with a selected period of time
-          if (moment(tweet.created_at, 'dd MMM DD HH:mm:ss ZZ YYYY', 'en')
-            .isAfter(moment().subtract(process.env.STATS_SINCE_DAYS, 'days'))) {
-            accumulator.retweets_recent = accumulator.retweets_recent + tweet.retweet_count;
-            accumulator.favorites_recent = accumulator.favorites_recent + tweet.favorite_count;
-            accumulator.tweets_recent += 1;
-          }
-          return accumulator;
-        }, {retweets_recent: 0, favorites_recent: 0, tweets_recent: 0});
-        if (error) {
-          const twitter_status = error[0].message;
-          account = Object.assign(account, {twitter_status});
-        } else {
-          const twitter_status = 'OK';
-          account = Object.assign(account, twitter_stats, {twitter_cycle: process.env.STATS_SINCE_DAYS});
-        }
-        updateTweetStats(account);
-      });
-    } catch (e) {
-      console.error(e);
-    }
-  });
-};
-
-const updateTweetStats = async (account) => {
+const updateMongoTweets = async (account) => {
   // Update tweets stats in the database
   try {
     const client = await MongoClient.connect(uri, { useNewUrlParser: true });
@@ -154,6 +147,42 @@ const updateTweetStats = async (account) => {
   }
 };
 
+// Middleware
+
+const getTwitterProfiles = async (req, res, next) => {
+  // Call twitter for updated profile information
+  const accounts = res.body;
+  Promise.all(accounts.map(fetchTwitterProfile))
+  .then(updatedAccounts => {
+    res.body = updatedAccounts;
+    next();
+  })
+};
+
+const updateTwitterProfiles = async (req, res, next) => {
+  // Call twitter for updated profile information
+  const accounts = res.body;
+  Promise.all(accounts.map(updateMongoProfile))
+  .then(res => next())
+};
+
+const getTweetStats = async (req, res, next) => {
+  // Call twitter for user tweets
+  const accounts = res.body;
+  Promise.all(accounts.map(fetchProfileStats))
+  .then(updatedAccounts => {
+    res.body = updatedAccounts;
+    next();
+  })
+};
+
+const updateTweetStats = async (req, res, next) => {
+  // Call twitter for updated profile information
+  const accounts = res.body;
+  Promise.all(accounts.map(updateMongoTweets))
+  .then(res => next())
+};
+
 const app = express();
 app.use(bodyParser.json());
 app.use((req, res, next) => {
@@ -163,12 +192,24 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/', (req, res) => {
-  getTwitterProfile();
-  getTweetStats();
+app.use('/', getTwitterAccounts);
+
+app.get('/profiles', getTwitterProfiles, updateTwitterProfiles, (req, res) => {
+  res.sendStatus(200);
 });
 
-app.get('/tweets', (req, res) => getTweetStats());
-app.get('/profiles', (req, res) => getTwitterProfile());
+app.get('/tweets', getTweetStats, updateTweetStats, (req, res) => {
+  res.sendStatus(200);
+});
 
-app.listen(3000, () => console.log('Example app listening on port 3000!'));
+app.get('/',
+  getTwitterProfiles,
+  updateTwitterProfiles,
+  getTweetStats,
+  updateTweetStats,
+  (req, res) => {
+    res.sendStatus(200);
+  }
+);
+
+app.listen(port, () => console.log(`Twitter module is listening on port ${port}!`));
