@@ -25,23 +25,38 @@ const updateTwitterProfile = async (account) => {
     const mongo = await MongoClient.connect(uri, { useNewUrlParser: true });
     const db = mongo.db(process.env.DB_NAME);
     const col = db.collection(process.env.DB_COLLECTION);
-    col.updateOne(
-      { _id: account._id }
-      , {
-        $set: {
-          twitter_id: account.twitterId,
-          twitter_name: account.twitterName,
-          twitter_followers: account.twitterFollowers,
-          tweets: account.tweets,
-          twitter_pic: account.twitterPic,
-          twitter_status: account.twitterStatus,
-          twitter_updated: Date.now(),
+    if (account.tiwtterStatus === 'OK') {
+      col.updateOne(
+        { _id: account._id }
+        , {
+          $set: {
+            twitter_id: account.twitterId,
+            twitter_name: account.twitterName,
+            twitter_followers: account.twitterFollowers,
+            tweets: account.tweets,
+            twitter_pic: account.twitterPic,
+            twitter_status: account.twitterStatus,
+            twitter_updated: Date.now(),
+          },
+        }, (err, result) => {
+          assert.equal(err, null);
+          assert.equal(1, result.result.n);
         },
-      }, (err, result) => {
-        assert.equal(err, null);
-        assert.equal(1, result.result.n);
-      },
-    );
+      );
+    } else {
+      col.updateOne(
+        { _id: account._id }
+        , {
+          $set: {
+            twitter_status: account.twitterStatus,
+            twitter_updated: Date.now(),
+          },
+        }, (err, result) => {
+          assert.equal(err, null);
+          assert.equal(1, result.result.n);
+        },
+      );
+    }
     mongo.close();
   } catch (e) {
     console.error(e);
