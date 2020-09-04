@@ -26,7 +26,7 @@
     "dotenv": "^5.0.1",
     "express": "^4.16.3",
     "moment": "^2.22.2",
-    "mongodb": "^3.1.0-beta4",
+    "mongodb": "^3.1.13",
     "twitter": "^1.7.1"
   }
 }
